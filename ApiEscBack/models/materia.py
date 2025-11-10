@@ -1,32 +1,80 @@
-from config.db import engine, Base
+from config.db import Base
 from sqlalchemy import Column, Integer, String, ForeignKey
-from sqlalchemy.orm import relationship, sessionmaker
+from sqlalchemy.orm import relationship
 from pydantic import BaseModel
+from typing import Optional
+
 
 class Materia(Base):
-   
-   __tablename__ = "materias"
-   
-   id = Column("id", Integer, primary_key=True)
-   nombre = Column("nombre", String)
-   estado = Column("estado", String)
-   user_id = Column("user_id", Integer, ForeignKey("usuarios.id"))
-   career_id = Column("career_id", Integer, ForeignKey("carreras.id"), nullable=True)
-   usuario = relationship("User", back_populates="rmateria")
-   carrera = relationship("Carrera", back_populates="materias", uselist=False)
+    __tablename__ = "materias"
 
-   def __init__(self, nombre, estado, user_id, career_id):
-      self.nombre = nombre
-      self.estado = estado
-      self.user_id = user_id
-      self.career_id = career_id
+    id = Column(Integer, primary_key=True)
+    nombre = Column(String, nullable=False)
+    orientacion_id = Column(Integer, ForeignKey("orientaciones.id"))
+    orientacion = relationship("Orientacion", back_populates="materias")
+    alumnos = relationship("AlumnoMateria", back_populates="materia")
+    anio = Column(Integer, nullable=False)
 
+
+
+# schemas/materia.py
+
+# 📥 Para crear materia
 class InputMateria(BaseModel):
-   nombre: str
-   estado: str
-   user_id: int
-   career_id: int
+    nombre: str
+    orientacion_id: int
+    anio: int
 
-# Crear la sesión
-Session = sessionmaker(bind=engine)
-session = Session() 
+# 🔄 Para actualizar materia
+class MateriaUpdate(BaseModel):
+    nombre: Optional[str] = None
+    orientacion_id: Optional[int] = None
+    anio: Optional[int] = None
+
+# 📤 Para devolver materia (sin relaciones)
+class MateriaOut(BaseModel):
+    id: int
+    nombre: str
+    orientacion_id: int
+    anio: int
+
+    class Config:
+        from_attributes = True
+
+class OrientacionBase(BaseModel):
+    id: int
+    nombre: str
+
+    class Config:
+        from_attributes = True
+
+class MateriaDetailOut(BaseModel):
+    id: int
+    nombre: str
+    orientacion: OrientacionBase  # 👈 relación anidada
+    anio: int
+
+    class Config:
+        from_attributes = True
+
+
+class AlumnoMateriaBase(BaseModel):
+    id: int
+    user_id: int
+    estado: str
+    nota: Optional[float]
+    fecha_inscripcion: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class MateriaWithAlumnos(BaseModel):
+    id: int
+    nombre: str
+    anio: int
+    orientacion: OrientacionBase
+    alumnos: list[AlumnoMateriaBase]
+
+    class Config:
+        from_attributes = True

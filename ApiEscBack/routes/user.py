@@ -1,34 +1,150 @@
-from fastapi import APIRouter, Request, Depends, HTTPException
-from models.user import (session,InputUser,User,InputLogin,UserDetail,InputUserDetail,InputRegister,UserDetailUpdate, UserOut, UserDetailOut)
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from psycopg2 import IntegrityError
-from auth.seguridad import obtener_usuario_desde_token, Seguridad
-from sqlalchemy.orm import (joinedload,load_only)
-from typing import List
-from models.carrera import Carrera
-from models.carreraUsuario import UsuarioCarrera
+from sqlalchemy.orm import joinedload, Session
+from config.db import get_db
+from models.user import (
+    User, UserDetail,
+    InputUser, InputLogin, UserDetailUpdate, UserOut, UserDetailOut,
+    PaginatedFilteredBody, PaginatedUsersOut
+)
 from models.pago import Pago
-
+from auth.seguridad import obtener_usuario_desde_token, Seguridad, solo_admin, admin_o_preceptor
+from typing import Dict, Any
+from typing import List, Optional
 
 user = APIRouter()
-userDetail = APIRouter()
 
+#Ver el perfil propio
+@user.get("/user/profile", response_model=UserOut)
+def get_own_profile(payload: dict = Depends(obtener_usuario_desde_token), db: Session = Depends(get_db)):
+    try:
+        user_id = int(payload.get("sub"))  # ✅ ahora correctamente usamos el campo 'sub'
+        db_user = (
+            db.query(User)
+            .options(joinedload(User.userdetail))
+            .filter(User.id == user_id)
+            .first()
+        )
+        if not db_user:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        return db_user
+    except Exception as e:
+        print("Error:", e)
+        raise HTTPException(status_code=500, detail="Error al obtener perfil")
 
-# Actualizar detalles de un usuario
+#Alumnos paginados y filtrados
+@user.post("/user/paginated/filtered-sync", response_model=PaginatedUsersOut)
+def get_users_paginated_filtered_sync(
+    body: PaginatedFilteredBody,
+    payload: dict = Depends(admin_o_preceptor),  # ✅ también puede acceder Preceptor
+    db: Session = Depends(get_db)
+):
+    limit = body.limit or 20
+    last_seen_id = body.last_seen_id or 0
+    search = (body.search or "").strip()
+
+    try:
+        q = (
+            db.query(User)
+            .outerjoin(User.userdetail)
+            .options(joinedload(User.userdetail))
+        )
+
+        if search:
+            like = f"%{search}%"
+            q = q.filter(
+                (User.username.ilike(like)) |
+                (UserDetail.email.ilike(like)) |
+                (UserDetail.firstName.ilike(like)) |
+                (UserDetail.lastName.ilike(like))
+            )
+
+        if last_seen_id > 0:
+            q = q.filter(User.id > last_seen_id)
+
+        q = q.order_by(User.id.asc()).limit(limit)
+
+        users_db = q.all()
+        next_cursor = users_db[-1].id if users_db else None
+
+        return {
+            "users": users_db,
+            "next_cursor": next_cursor
+        }
+
+    except Exception as e:
+        print("Error:", e)
+        raise HTTPException(status_code=500, detail="Error al obtener usuarios")
+
+@user.post("/users/register/full")
+def crear_usuario_completo(
+    user: InputUser,
+    payload: dict = Depends(obtener_usuario_desde_token),
+    db: Session = Depends(get_db)
+):
+    if payload["type"] not in ["Admin"]:
+        raise HTTPException(status_code=403, detail="No tienes permiso para registrar usuarios")
+    try:
+        existing_username = db.query(User).filter(User.username == user.username).first()
+        existing_email = db.query(UserDetail).filter(UserDetail.email == user.email).first()
+
+        if existing_username:
+            return "El usuario ya existe"
+        if existing_email:
+            return "El email ya existe"
+
+        new_user = User(username=user.username, password=user.password)
+        new_detail = UserDetail(
+            dni=user.dni,
+            firstName=user.firstName,
+            lastName=user.lastName,
+            type=user.type,
+            email=user.email
+        )
+
+        db.add(new_detail)
+        db.flush()
+
+        new_user.id_userdetail = new_detail.id
+        db.add(new_user)
+        db.commit()
+        return "Usuario registrado correctamente"
+
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=500, content={"detail": f"Error inesperado: {str(e)}"})
+
+#Login de usuario
+@user.post("/users/loginUser")
+def login_post(userIn: InputLogin, db: Session = Depends(get_db)):
+    try:
+        user = db.query(User).filter(User.username == userIn.username).first()
+        if not user or user.password != userIn.password:
+            return JSONResponse(status_code=401, content={"success": False, "message": "Usuario y/o password incorrectos!"})
+
+        token = Seguridad.generar_token(user)
+        if not token:
+            return JSONResponse(status_code=401, content={"success": False, "message": "Error de generación de token!"})
+
+        return JSONResponse(status_code=200, content={"success": True, "token": token})
+
+    except Exception as e:
+        print(e)
+        return JSONResponse(status_code=500, content={"success": False, "message": "Error interno del servidor"})
+
+#Editar detalles de usuario parcialmente
 @user.patch("/users/{user_id}/details", response_model=dict)
 def actualizar_parcial_userdetail(
     user_id: int,
     cambios: UserDetailUpdate,
-    payload: dict = Depends(obtener_usuario_desde_token),
+    payload: dict = Depends(admin_o_preceptor),  # ✅ también lo puede hacer el preceptor
+    db: Session = Depends(get_db)
 ):
     try:
-        user = session.query(User).filter(User.id == user_id).first()
+        user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-        # Solo permite si:
-        # - el usuario es admin
-        # - o el usuario es el mismo que quiere editarse
         if payload["type"] != "Admin" and int(payload["sub"]) != user_id:
             raise HTTPException(status_code=403, detail="No autorizado")
 
@@ -37,229 +153,28 @@ def actualizar_parcial_userdetail(
 
         datos_a_actualizar = cambios.dict(exclude_unset=True)
 
-        # Si no es admin, no permitir modificar el campo 'type'
+        # El preceptor no puede cambiar el tipo
         if payload["type"] != "Admin":
             datos_a_actualizar.pop("type", None)
 
         for campo, valor in datos_a_actualizar.items():
             setattr(user.userdetail, campo, valor)
 
-        session.commit()
+        db.commit()
         return {"msg": "Actualizado correctamente"}
 
     except Exception as e:
-        session.rollback()
+        db.rollback()
         print("Error:", e)
         raise HTTPException(status_code=500, detail="Error interno del servidor")
 
-    finally:
-        session.close()
 
-# Crear un nuevo usuario
-@user.post("/users/register")
-def crear_usuario(user: InputRegister, payload: dict = Depends(obtener_usuario_desde_token)):
-    if payload["type"] not in ["Admin"]:
-        raise HTTPException(status_code=403, detail="No tienes permiso para registrar usuarios")
-    try:
-        # Validar si el username ya existe
-        if validate_username(user.username):
-            if validate_email(user.email):
-                new_user = User(
-                    username=user.username,
-                    password=user.password,  # Asegurate de tener esta función
-                )
-                new_detail = UserDetail(
-                    dni=None,
-                    firstName=None,
-                    lastName=None,
-                    type="Alumno",  # Podés dejar esto en blanco o poner un valor por defecto
-                    email=user.email,
-                )
-
-                session.add(new_detail)
-                session.flush()  # Para que se genere el ID antes de asociar
-
-                new_user.id_userdetail = new_detail.id
-                session.add(new_user)
-                session.commit()
-                return "Usuario registrado correctamente"
-            
-            else:
-                return "El email ya existe"
-        else:
-            return "El usuario ya existe"
-             
-            
-    except IntegrityError as e:
-        session.rollback()
-        return JSONResponse(
-            status_code=400, content={"detail": "Error de integridad: " + str(e)}
-        )
-    except Exception as e:
-        session.rollback()
-        return JSONResponse(
-            status_code=500, content={"detail": f"Error inesperado: {str(e)}"}
-        )
-    finally:
-        session.close()
-
-#Crear usuario completo
-# Esta ruta permite a un usuario con rol Admin registrar un nuevo usuario con todos los detalles
-@user.post("/users/register/full")
-def crear_usuario_completo(user: InputUser, payload: dict = Depends(obtener_usuario_desde_token)):
-    if payload["type"] not in ["Admin"]:
-        raise HTTPException(status_code=403, detail="No tienes permiso para registrar usuarios")
-    try:
-        # Validar si el username ya existe
-        if validate_username(user.username):
-            if validate_email(user.email):
-                new_user = User(
-                    username=user.username,
-                    password=user.password,  # Asegurate de tener esta función
-                )
-                new_detail = UserDetail(
-                    dni=user.dni,
-                    firstName=user.firstName,
-                    lastName=user.lastName,
-                    type=user.type,
-                    email=user.email,
-                )
-
-                session.add(new_detail)
-                session.flush()  # Para que se genere el ID antes de asociar
-
-                new_user.id_userdetail = new_detail.id
-                session.add(new_user)
-                session.commit()
-                return "Usuario registrado correctamente"
-            
-            else:
-                return "El email ya existe"
-        else:
-            return "El usuario ya existe"
-            
-    except IntegrityError as e:
-        session.rollback()
-        return JSONResponse(
-            status_code=400, content={"detail": "Error de integridad: " + str(e)}
-        )
-    except Exception as e:
-        session.rollback()
-        return JSONResponse(
-            status_code=500, content={"detail": f"Error inesperado: {str(e)}"}
-        )
-    finally:
-        session.close()
-
-@user.get("/users/all", response_model=List[UserOut])  # Ruta protegida con token
-def obtener_usuarios(payload: dict = Depends(obtener_usuario_desde_token)):
-    if payload["type"] not in ["Admin"]:
-        raise HTTPException(status_code=403, detail="No tienes permiso para ver los usuarios")
-    try:
-        usuarios = (
-            session.query(User)
-            .options(joinedload(User.userdetail))  # Carga los detalles del usuario
-            .all()
-        )
-        return usuarios
-    finally:
-        session.close()
-
-@user.get("/")
-def welcome():
-    return "Bienvenido!!"
-
-@user.get("/users/login/{n}")
-def get_users_id(n: str):
-    try:
-        return session.query(User).filter(User.username == n).first()
-    except Exception as ex:
-        return ex
-
-
-@user.post("/users/loginUser")
-def login_post(userIn: InputLogin):
-    try:
-        user = session.query(User).filter(User.username == userIn.username).first()
-        if not user.password == userIn.password:
-            return JSONResponse(
-                status_code=401,
-                content={
-                    "success": False,
-                    "message": "Usuario y/o password incorrectos!",
-                },
-            )
-        else:
-            authDat = Seguridad.generar_token(user)  # Genera el token de autenticación
-            if not authDat:
-                return JSONResponse(
-                    status_code=401,
-                    content={
-                        "success": False,
-                        "message": "Error de generación de token!",
-                    },
-                )
-            else:
-                return JSONResponse(
-                    status_code=200, content={"success": True, "token": authDat}
-                )
-
-    except Exception as e:
-        print(e)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "message": "Error interno del servidor",
-            },
-        )
-
-
-def validate_username(value):
-    existing_user = session.query(User).filter(User.username == value).first()
-    session.close()
-    if existing_user:
-        return None
-        ##raise ValueError("Username already exists")
-    else:
-        return value
-
-
-def validate_email(value):
-    existing_email = session.query(UserDetail).filter(UserDetail.email == value).first()
-    session.close()
-    if existing_email:
-        ##raise ValueError("Email already exists")
-        return None
-    else:
-        return value
-
-
-
-# region de userDetail
-@userDetail.get("/userdetail/all")
-def get_userDetails():
-    try:
-        return session.query(UserDetail).all()
-    except Exception as e:
-        print(e)
-
-
-@userDetail.post("/userdetail/add")
-def add_usuarDetail(userDet: InputUserDetail):
-    usuNuevo = UserDetail(
-        userDet.dni, userDet.firstName, userDet.lastName, userDet.type, userDet.email
-    )
-
-    session.add(usuNuevo)
-    session.commit()
-    return "usuario detail agregado"
-
+#Ver todos los alumnos
 @user.get("/user/alumnos")
-def obtener_alumnos():
+def obtener_alumnos(payload: dict = Depends(admin_o_preceptor), db: Session = Depends(get_db)):  # ✅ Preceptor puede ver
     try:
         alumnos = (
-            session.query(User)
+            db.query(User)
             .join(UserDetail)
             .filter(UserDetail.type == "Alumno")
             .all()
@@ -279,162 +194,63 @@ def obtener_alumnos():
         print("Error al obtener alumnos:", e)
         return JSONResponse(status_code=500, content={"detail": "Error al obtener alumnos"})
 
+#ruta para obtener el último usuario registrado
 @user.get("/users/ultimo")
-def obtener_ultimo_usuario(payload: dict = Depends(obtener_usuario_desde_token)):
+def obtener_ultimo_usuario(
+    payload: dict = Depends(obtener_usuario_desde_token),
+    db: Session = Depends(get_db)
+):
     if payload["type"] != "Admin":
         raise HTTPException(status_code=403, detail="No autorizado")
 
     try:
-        ultimo = session.query(User).options(
-            joinedload(User.userdetail)
-        ).order_by(User.id.desc()).first()
+        ultimo = (
+            db.query(User)
+            .options(joinedload(User.userdetail))
+            .order_by(User.id.desc())
+            .first()
+        )
 
         if not ultimo or not ultimo.userdetail:
-            return JSONResponse(status_code=404, content={"message": "No hay usuarios registrados"})
+            return JSONResponse(
+                status_code=404,
+                content={"message": "No hay usuarios registrados"}
+            )
 
         return {
             "firstName": ultimo.userdetail.firstName,
             "lastName": ultimo.userdetail.lastName
         }
-    finally:
-        session.close()
-# endregion de userDetail
-#region rutas sin uso
-@user.post("/users/login")
-def login_user(us: InputLogin):
-    try:
-        user = session.query(User).filter(User.username == us.username).first()
-        if user and user.password == us.password:
-            token = Seguridad.generar_token(user)
-            res = {
-                "status": "success",
-                "token": token,
-                "user": user.userdetail,
-                "message": "User logged in successfully!",
-            }
-            return res
 
-        else:
-            res = {"message": "Invalid username or password"}
-            return JSONResponse(status_code=401, content=res)
-    except Exception as ex:
-        print("Error ---->> ", ex)
-    finally:
-        session.close()
-
-@user.get("/users/all/NOSOTROS")
-def obtener_usuario_detalle(req: Request):
-    try:
-        has_access = Seguridad.verificar_token(req.headers)
-        if "iat" in has_access:
-            usuarios = session.query(User).options(joinedload(User.userdetail)).all()
-            usuarios_con_detalles = (
-                []
-            )  # Convierte los usuarios en una lista de diccionarios
-            for usuario in usuarios:
-                usuario_con_detalle = {
-                    "id": usuario.id,
-                    "username": usuario.username,
-                    "dni": usuario.userdetail.dni,
-                    "first_Name": usuario.userdetail.firstName,
-                    "last_Name": usuario.userdetail.lastName,
-                    "type": usuario.userdetail.type,
-                    "email": usuario.userdetail.email,
-                }
-                usuarios_con_detalles.append(usuario_con_detalle)
-                return JSONResponse(status_code=200, content=usuarios_con_detalles)
-            else:
-                return JSONResponse(status_code=403, content=has_access)
     except Exception as e:
-        print("Error al obtener usuarios:", e)
-        return JSONResponse(
-            status_code=500, content={"detail": "Error al obtener usuarios"}
-        )
-        
-@user.post("/users/Register")
-def crear_usuario(user: InputRegister):
-    try:
-        if validate_username(user.username):
-            if validate_email(user.email):
-                newUser = User(
-                    user.username,
-                    user.password,
-                )
-                newUserDetail = UserDetail(
-                    user.dni, user.firstname, user.lastname, user.type, user.email
-                )
-                newUser.userdetail = newUserDetail
-                session.add(newUser)
-                session.commit()
-                return "Usuario agregado"
-            else:
-                return "El email ya existe"
-        else:
-            return "el usuario ya existe"
-    except IntegrityError as e:
-        # Suponiendo que el msj de error contiene "username" para el campo duplicado
-        if "username" in str(e):
-            return JSONResponse(
-                status_code=400, content={"detail": "Username ya existe"}
-            )
-        else:
-            # Maneja otros errores de integridad
-            print("Error de integridad inesperado:", e)
-            return JSONResponse(
-                status_code=500, content={"detail": "Error al agregar usuario"}
-            )
-    except Exception as e:
-        session.rollback()
-        print("Error al eliminar usuario:", e)
-        return JSONResponse(
-            status_code=500, content={"detail": "Error al agregar usuario"}
-        )
-    finally:
-        session.close()
+        print("Error al obtener el último usuario:", e)
+        raise HTTPException(status_code=500, detail="Error interno del servidor")
 
+#ruta para eliminar un usuario y sus datos asociados
 @user.delete("/users/{user_id}", response_model=dict)
-def eliminar_usuario(user_id: int, payload: dict = Depends(obtener_usuario_desde_token)):
+def eliminar_usuario(user_id: int, payload: dict = Depends(admin_o_preceptor), db: Session = Depends(get_db)):
+    if payload["type"] != "Admin":
+        raise HTTPException(status_code=403, detail="No tienes permiso para eliminar usuarios")
     try:
-        if payload["type"] != "Admin":
-            raise HTTPException(status_code=403, detail="No tienes permiso para eliminar usuarios")
-
-        user = session.query(User).filter(User.id == user_id).first()
+        user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-        # Eliminar entradas de la tabla pivote (carreraUsuario)
-        pivotes = session.query(UsuarioCarrera).filter(UsuarioCarrera.user_id == user_id).all()
-        for pivote in pivotes:
-            session.delete(pivote)
-
-        # Eliminar carreras creadas por el usuario (si es Admin o similar)
-        carreras_creadas = session.query(Carrera).filter(Carrera.user_id == user_id).all()
-        for carrera in carreras_creadas:
-            session.delete(carrera)
-
-        # Eliminar pagos asociados al usuario
-        pagos = session.query(Pago).filter(Pago.user_id == user_id).all()
+        pagos = db.query(Pago).filter(Pago.user_id == user_id).all()
         for pago in pagos:
-            session.delete(pago)
+            db.delete(pago)
 
-        # Eliminar UserDetail si existe
         if user.id_userdetail:
-            detalle = session.query(UserDetail).filter(UserDetail.id == user.id_userdetail).first()
+            detalle = db.query(UserDetail).filter(UserDetail.id == user.id_userdetail).first()
             if detalle:
-                session.delete(detalle)
+                db.delete(detalle)
 
-        #  Finalmente eliminar el usuario
-        session.delete(user)
-        session.commit()
+        db.delete(user)
+        db.commit()
 
         return {"msg": "Usuario y datos asociados eliminados correctamente"}
 
     except Exception as e:
-        session.rollback()
+        db.rollback()
         print("Error al eliminar usuario:", e)
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
-    finally:
-        session.close()
-
-
-#endregion rutas sin uso

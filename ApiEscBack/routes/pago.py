@@ -1,187 +1,188 @@
-from fastapi import APIRouter, Request, Depends, HTTPException
-from typing import List
-from auth.seguridad import obtener_usuario_desde_token
-from models.pago import Pago, NuevoPago, session, PagoOut, EditarPago
-from models.user import User
-from auth.seguridad import Seguridad
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from psycopg2 import IntegrityError
-from sqlalchemy.orm import (
-   joinedload,
+from sqlalchemy.orm import Session, joinedload
+from typing import List
+from config.db import get_db
+from models.pago import (
+    Pago, NuevoPago, PagoOut, EditarPago,
+    PaginatedPagosBody, PaginatedPagosOut
 )
+from models.user import User
+from auth.seguridad import obtener_usuario_desde_token, solo_admin, admin_o_preceptor
+from psycopg2 import IntegrityError
 
 pago = APIRouter()
 
-@pago.post("/nuevoPago") # Ruta protegida para que el ADMIN ingrese un nuevo pago
-def nuevo_pago(pago: NuevoPago, payload: dict = Depends(obtener_usuario_desde_token)):
-    if payload["type"] != "Admin":
-        raise JSONResponse(status_code=403, detail="No tienes permiso para ingresar pagos")
-        
-    
+# ──────────────────────────────────────────────────────────────
+# 📌 ADMIN: Crear nuevo pago
+# ──────────────────────────────────────────────────────────────
+@pago.post("/nuevoPago")
+def nuevo_pago(pago: NuevoPago, db: Session = Depends(get_db), payload: dict = Depends(solo_admin)):
     try:
-        nuevo_pago = Pago(
+        nuevo = Pago(
             carrera_id=pago.carrera_id,
             user_id=pago.user_id,
             monto=pago.monto,
             mes=pago.mes
         )
-        session.add(nuevo_pago)
-        session.commit()
+        db.add(nuevo)
+        db.commit()
         return JSONResponse(status_code=200, content={"message": "Pago creado exitosamente"})
     except IntegrityError:
-        session.rollback()
+        db.rollback()
         return JSONResponse(status_code=400, content={"message": "Error al crear el pago"})
-    finally:
-        session.close()
-
-@pago.delete("/eliminarPago/{pago_id}") # Ruta protegida para que el ADMIN elimine un pago
-def eliminar_pago(pago_id: int, payload: dict = Depends(obtener_usuario_desde_token)):
-    
-    if payload["type"] != "Admin":
-        raise JSONResponse(status_code=403, detail="Solo el administrador puede eliminar pagos")
-
-    try:
-        pago = session.query(Pago).filter_by(id=pago_id).first()
-        if not pago:
-            return JSONResponse(status_code=404, content={"message": "Pago no encontrado"})
-
-        session.delete(pago)
-        session.commit()
-        return {"message": "Pago eliminado"}
-    finally:
-        session.close()
 
 
+# ──────────────────────────────────────────────────────────────
+# 📌 ADMIN: Eliminar pago
+# ──────────────────────────────────────────────────────────────
+@pago.delete("/eliminarPago/{pago_id}")
+def eliminar_pago(pago_id: int, db: Session = Depends(get_db), payload: dict = Depends(solo_admin)):
+    pago_obj = db.query(Pago).filter_by(id=pago_id).first()
+    if not pago_obj:
+        return JSONResponse(status_code=404, content={"message": "Pago no encontrado"})
 
+    db.delete(pago_obj)
+    db.commit()
+    return {"message": "Pago eliminado"}
+
+
+# ──────────────────────────────────────────────────────────────
+# 📌 ADMIN: Ver último pago
+# ──────────────────────────────────────────────────────────────
 @pago.get("/pago/ultimo")
-def obtener_ultimo_pago(payload: dict = Depends(obtener_usuario_desde_token)):
-    if payload["type"] != "Admin":
-        raise HTTPException(status_code=403, detail="No autorizado")
+def obtener_ultimo_pago(db: Session = Depends(get_db), payload: dict = Depends(solo_admin)):
+    ultimo = (
+        db.query(Pago)
+        .options(joinedload(Pago.user).joinedload(User.userdetail))
+        .order_by(Pago.id.desc())
+        .first()
+    )
+    if not ultimo:
+        return JSONResponse(status_code=404, content={"message": "No hay pagos registrados"})
+
+    return {
+        "alumno": f"{ultimo.user.userdetail.firstName} {ultimo.user.userdetail.lastName}"
+        if ultimo.user and ultimo.user.userdetail else "Alumno desconocido",
+        "monto": ultimo.monto,
+        "mes": ultimo.mes
+    }
+
+
+# ──────────────────────────────────────────────────────────────
+# 📌 ADMIN: Ver pagos con filtros y cursor
+# ──────────────────────────────────────────────────────────────
+@pago.post("/pago/paginated/filtered-sync", response_model=PaginatedPagosOut)
+def get_pagos_paginated_filtered_sync(
+    body: PaginatedPagosBody,
+    db: Session = Depends(get_db),
+    payload: dict = Depends(solo_admin),  # 👈 Si querés permitir preceptor, usar admin_o_preceptor
+):
+    limit = body.limit or 20
+    last_seen_id = body.last_seen_id or 0
 
     try:
-        ultimo = session.query(Pago).options(
-            joinedload(Pago.user).joinedload(User.userdetail)
-        ).order_by(Pago.id.desc()).first()
+        q = (
+            db.query(Pago)
+            .options(
+                joinedload(Pago.user).joinedload("userdetail"),
+                joinedload(Pago.carrera)
+            )
+        )
 
-        if not ultimo:
-            return JSONResponse(status_code=404, content={"message": "No hay pagos registrados"})
+        if body.user_id:
+            q = q.filter(Pago.user_id == body.user_id)
+        if body.carrera_id:
+            q = q.filter(Pago.carrera_id == body.carrera_id)
+        if body.fecha_desde:
+            q = q.filter(Pago.mes >= body.fecha_desde)
+        if body.fecha_hasta:
+            q = q.filter(Pago.mes <= body.fecha_hasta)
+        if last_seen_id > 0:
+            q = q.filter(Pago.id > last_seen_id)
+
+        q = q.order_by(Pago.id.asc()).limit(limit)
+
+        pagos_db = q.all()
+        next_cursor = pagos_db[-1].id if pagos_db else None
+
+        pagos_out = [
+            PagoOut(
+                id=p.id,
+                user_id=p.user_id,
+                carrera_id=p.carrera_id,
+                monto=p.monto,
+                mes=p.mes.strftime("%Y-%m") if p.mes else "",
+                carrera={
+                    "id": p.carrera.id,
+                    "nombre": p.carrera.nombre
+                } if p.carrera else None
+            ) for p in pagos_db
+        ]
 
         return {
-            "alumno": f"{ultimo.user.userdetail.firstName} {ultimo.user.userdetail.lastName}"
-            if ultimo.user and ultimo.user.userdetail else "Alumno desconocido",
-            "monto": ultimo.monto,
-            "mes": ultimo.mes
+            "pagos": pagos_out,
+            "next_cursor": next_cursor
         }
-    finally:
-        session.close()
-@pago.get("/pago/todos", response_model=List[PagoOut])  # Admin ve todos los pagos
-def ver_todos_los_pagos(payload: dict = Depends(obtener_usuario_desde_token)):
-    if payload["type"] != "Admin":
-        raise HTTPException(status_code=403, detail="No autorizado")
-    
-    try:
-        pagos = session.query(Pago).options(joinedload(Pago.carrera)).all()
-        pagos_serializados = []
-        for p in pagos:
-            pagos_serializados.append({
-                "id": p.id,
-                "user_id": p.user_id,
-                "carrera_id": p.carrera_id,
-                "monto": p.monto,
-                "mes": p.mes.strftime("%Y-%m") if p.mes else "",
-                "carrera": {
-                    "id": p.carrera.id,
-                    "nombre": p.carrera.nombre
-                } if p.carrera else None
-            })
-        return pagos_serializados
-    finally:
-        session.close()
 
+    except Exception as e:
+        print("Error en paginación de pagos:", e)
+        raise HTTPException(status_code=500, detail="Error al obtener pagos")
+
+
+# ──────────────────────────────────────────────────────────────
+# 👤 ALUMNO: Ver sus propios pagos
+# ──────────────────────────────────────────────────────────────
 @pago.get("/pago/mis_pagos", response_model=List[PagoOut])
-def ver_mis_pagos(payload: dict = Depends(obtener_usuario_desde_token)):
+def ver_mis_pagos(db: Session = Depends(get_db), payload: dict = Depends(obtener_usuario_desde_token)):
     if payload["type"] != "Alumno":
         raise HTTPException(status_code=403, detail="Solo los alumnos pueden ver estos pagos")
 
-    try:
-        pagos = session.query(Pago).options(joinedload(Pago.carrera)).filter(Pago.user_id == payload["sub"]).all()
-        pagos_serializados = []
-        for p in pagos:
-            pagos_serializados.append({
-                "id": p.id,
-                "user_id": p.user_id,
-                "carrera_id": p.carrera_id,
-                "monto": p.monto,
-                "mes": p.mes.strftime("%Y-%m") if p.mes else "",
-                "carrera": {
-                    "id": p.carrera.id,
-                    "nombre": p.carrera.nombre
-                } if p.carrera else None
-            })
-        return pagos_serializados
-    finally:
-        session.close()
-     
+    pagos = (
+        db.query(Pago)
+        .options(joinedload(Pago.carrera))
+        .filter(Pago.user_id == payload["sub"])
+        .all()
+    )
 
-'''
-@pago.get("/pago/todos", response_model=List[PagoOut])       #para que el ADMIN vea TODOS los pagos
-def ver_todos_los_pagos(payload: dict = Depends(obtener_usuario_desde_token)):
-    if payload["type"] not in ["Admin"]:
-        raise HTTPException(status_code=403, detail="No autorizado")
-    
-    try:
-        pagos = session.query(Pago).options(joinedload(Pago.carrera)).all()
-        return pagos
-    finally:
-        session.close()
+    return [
+        {
+            "id": p.id,
+            "user_id": p.user_id,
+            "carrera_id": p.carrera_id,
+            "monto": p.monto,
+            "mes": p.mes.strftime("%Y-%m") if p.mes else "",
+            "carrera": {
+                "id": p.carrera.id,
+                "nombre": p.carrera.nombre
+            } if p.carrera else None
+        }
+        for p in pagos
+    ]
 
-        
-        
-@pago.get("/pago/mis_pagos", response_model=list[PagoOut])
-def ver_mis_pagos(
-    payload: dict = Depends(obtener_usuario_desde_token),
-    
-):
-    if payload["type"] != "Alumno":
-        raise HTTPException(status_code=403, detail="Solo los alumnos pueden ver estos pagos")
-    try:
-        pagos = session.query(Pago).options(joinedload(Pago.carrera)).filter(Pago.user_id == payload["sub"]).all()
-        
-        pagos_formateados = []
-        for p in pagos:
-            p_dict = p.__dict__.copy()
-            p_dict["mes"] = p.mes.strftime("%Y-%m") if p.mes else None
-            p_dict["carrera"] = p.carrera
-            pagos_formateados.append(p_dict)
 
-        return pagos_formateados
-    finally:
-        session.close()
-'''
-@pago.patch("/editarPago/{pago_id}")  # Ruta protegida para modificación parcial
+# ──────────────────────────────────────────────────────────────
+# 📌 ADMIN: Editar pago parcialmente
+# ──────────────────────────────────────────────────────────────
+@pago.patch("/editarPago/{pago_id}")
 def editar_pago_parcial(
     pago_id: int,
     datos_actualizados: EditarPago,
-    payload: dict = Depends(obtener_usuario_desde_token)
+    db: Session = Depends(get_db),
+    payload: dict = Depends(solo_admin)
 ):
-    if payload["type"] != "Admin":
-        return JSONResponse(status_code=403, content={"message": "Solo el administrador puede modificar pagos"})
+    pago_existente = db.query(Pago).filter_by(id=pago_id).first()
+    if not pago_existente:
+        return JSONResponse(status_code=404, content={"message": "Pago no encontrado"})
 
-    try:
-        pago_existente = session.query(Pago).filter_by(id=pago_id).first()
-        if not pago_existente:
-            return JSONResponse(status_code=404, content={"message": "Pago no encontrado"})
+    if datos_actualizados.user_id is not None:
+        pago_existente.user_id = datos_actualizados.user_id
+    if datos_actualizados.carrera_id is not None:
+        pago_existente.carrera_id = datos_actualizados.carrera_id
+    if datos_actualizados.monto is not None:
+        pago_existente.monto = datos_actualizados.monto
+    if datos_actualizados.mes is not None:
+        pago_existente.mes = datos_actualizados.mes
 
-        if datos_actualizados.user_id is not None:
-            pago_existente.user_id = datos_actualizados.user_id
-        if datos_actualizados.carrera_id is not None:
-            pago_existente.carrera_id = datos_actualizados.carrera_id
-        if datos_actualizados.monto is not None:
-            pago_existente.monto = datos_actualizados.monto
-        if datos_actualizados.mes is not None:
-            pago_existente.mes = datos_actualizados.mes
-
-        session.commit()
-        return {"message": "Pago modificado parcialmente"}
-    finally:
-       session.close()
+    db.commit()
+    return {"message": "Pago modificado parcialmente"}

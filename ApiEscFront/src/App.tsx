@@ -4,14 +4,14 @@ import ProtectedRoute from './components/Routes/ProtectedRoute'
 import PublicRoute from './components/Routes/PublicRoute'
 import Login from './views/Login'
 import MainLayout from './layouts/MainLayaut'
-import Carreras from './views/Carreras'
+import Carreras from './views/GestionOrientaciones'
 
 function App() {
   
-  const Pagos = lazy(() => import('./views/Pagos'));
+  const Pagos = lazy(() => import('./views/GestionPagos'));
   const MisPagos = lazy(() => import('./views/MisPagos'));
   const Perfil = lazy(() => import('./views/Perfil'));
-  const Alumnos = lazy(() => import('./views/Alumnos'));
+  const Alumnos = lazy(() => import('./views/GestionUsuarios'));
 
   return (
     <BrowserRouter>

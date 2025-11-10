@@ -1,13 +1,15 @@
 import jwt
 from datetime import datetime, timedelta
-from fastapi import HTTPException, status, Header
+from fastapi import HTTPException, status, Header, Depends
 from typing import Dict, Any
 from models.user import User
 from zoneinfo import ZoneInfo
 
+# Para verificar tipo en dependencias
+from fastapi import Request
+
 class Seguridad:
-    # NOTA: Esta clave debe ir en variable de entorno en producción
-    secret = "tu_clave_secreta"
+    secret = "tu_clave_secreta"  # ⚠️ En producción, pasalo a variable de entorno
 
     @classmethod
     def generar_token(cls, user: User) -> str:
@@ -16,18 +18,15 @@ class Seguridad:
             ahora = datetime.now(zona_arg)
 
             payload = {
-                "sub": str (user.id),  # subject del token, generalmente el ID del usuario
+                "sub": str(user.id),
                 "username": user.username,
                 "type": user.userdetail.type,
-                "exp": ahora + timedelta(days=1), # Expira en 1 día
+                "exp": ahora + timedelta(days=1),
                 "iat": ahora,
             }
             token = jwt.encode(payload, cls.secret, algorithm="HS256")
-
-            # Asegurarse de devolver string
             if isinstance(token, bytes):
                 token = token.decode("utf-8")
-
             return token
         except Exception as e:
             print("[ERROR] Al generar token:", e)
@@ -40,7 +39,6 @@ class Seguridad:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="No se proporcionó token de autorización."
             )
-
         try:
             token_type, token = header["authorization"].split(" ")
 
@@ -71,7 +69,25 @@ class Seguridad:
                 detail="Error interno del servidor al verificar el token."
             )
 
-# Dependencia para FastAPI
+# Dependencia general
 async def obtener_usuario_desde_token(authorization: str = Header(...)) -> Dict[str, Any]:
     headers = {"authorization": authorization}
     return Seguridad.verificar_token(headers)
+
+# 👑 Solo admin
+async def solo_admin(user=Depends(obtener_usuario_desde_token)):
+    if user["type"].lower() != "admin":
+        raise HTTPException(status_code=403, detail="Solo admin puede acceder")
+    return user
+
+# 🧑‍🏫 Admin o preceptor
+async def admin_o_preceptor(user=Depends(obtener_usuario_desde_token)):
+    if user["type"].lower() not in ["admin", "preceptor"]:
+        raise HTTPException(status_code=403, detail="Permisos insuficientes")
+    return user
+
+# 🎓 Solo alumno
+async def solo_alumno(user=Depends(obtener_usuario_desde_token)):
+    if user["type"].lower() != "alumno":
+        raise HTTPException(status_code=403, detail="Solo alumnos pueden acceder")
+    return user

@@ -1,90 +1,96 @@
-from config.db import engine, Base
+from config.db import Base
 from sqlalchemy import Column, Integer, String, ForeignKey
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import relationship
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Literal
 
-
-#regionUSER
+#region USER
 class User(Base):
+    __tablename__ = "usuarios"
 
-   __tablename__ = "usuarios"  # nombre de la tabla en la base de datos
+    id = Column(Integer, primary_key=True)
+    username = Column(String)
+    password = Column(String)
 
-   id = Column("id", Integer, primary_key=True)
-   username = Column("username", String)
-   password = Column("password", String)
-   id_userdetail = Column(Integer, ForeignKey("userdetails.id"))
-   userdetail = relationship("UserDetail", backref="user", uselist=False)
-   rmateria = relationship("Materia", back_populates="usuario", uselist=True)
-   pago = relationship("Pago", back_populates="user", uselist=True)
-   pivoteCarrera = relationship("UsuarioCarrera", back_populates="user")
-   
+    userdetail = relationship("UserDetail", back_populates="user", uselist=False)
+    materias = relationship("AlumnoMateria", back_populates="alumno")
+    pago = relationship("Pago", back_populates="user", uselist=True)
 
-   def __init__(self,username,password):
-       self.username = username
-       self.password = password
+    def __init__(self, username, password):
+        self.username = username
+        self.password = password
 #endregion
 
-#regionUSERDETAIL
+#region USERDETAIL
 class UserDetail(Base):
+    __tablename__ = "userdetails"
 
-   __tablename__ = "userdetails"
+    id = Column(Integer, primary_key=True)
+    dni = Column(Integer)
+    firstName = Column(String)
+    lastName = Column(String)
+    type = Column(String(50))
+    email = Column(String(80), nullable=False, unique=True)
 
-   id = Column("id", Integer, primary_key=True)
-   dni = Column("dni", Integer)
-   firstName = Column("firstName", String)
-   lastName = Column("lastName", String)
-   type = Column("type", String (50),)  # Ejemplo: "alumno", "profesor", "administrativo"
-   email = Column("email", String(80), nullable=False, unique=True)
+    orientacion_id = Column(Integer, ForeignKey("orientaciones.id"), nullable=True)
+    anio_lectivo = Column(Integer, nullable=True)
+    estado_academico = Column(String(30), nullable=True)
+    
+    user = relationship("User", back_populates="userdetail", uselist=False)
+    orientacion = relationship("Orientacion", back_populates="usuarios")
 
-
-   def __init__(self, dni, firstName, lastName, type, email):
-       self.dni = dni
-       self.firstName = firstName
-       self.lastName = lastName
-       self.type = type
-       self.email = email
-#endRegion
+    def __init__(self, dni, firstName, lastName, type, email):
+        self.dni = dni
+        self.firstName = firstName
+        self.lastName = lastName
+        self.type = type
+        self.email = email
+#endregion
 
 #region PYDANTIC
+
 class InputUser(BaseModel):
-   username: str
-   password: str
-   email: str
-   dni: int
-   firstName: str
-   lastName: str
-   type: str
-   
+    username: str
+    password: str
+    email: str
+    dni: int
+    firstName: str
+    lastName: str
+    type: Literal["Alumno", "Admin", "Preceptor"]
+
 class InputLogin(BaseModel):
     username: str
     password: str
 
 class InputUserDetail(BaseModel):
-   dni: int
-   firstName: str
-   lastName: str
-   type: str
-   email: str
+    dni: int
+    firstName: str
+    lastName: str
+    type: Literal["Alumno", "Admin", "Preceptor"]
+    email: str
+    orientacion_id: Optional[int] = None
+    anio_lectivo: Optional[int] = None
+    estado_academico: Optional[str] = None
 
 class UserDetailUpdate(BaseModel):
     dni: Optional[int] = None
     firstName: Optional[str] = None
     lastName: Optional[str] = None
-    type: Optional[str] = None  # "alumno", "profesor", etc.
-    email: Optional[str]  = None
+    type: Optional[Literal["Alumno", "Admin", "Preceptor"]] = None
+    email: Optional[str] = None
+    orientacion_id: Optional[int] = None
+    anio_lectivo: Optional[int] = None
+    estado_academico: Optional[str] = None
 
-class InputRegister(BaseModel):
-   username: str
-   password: str
-   email: str
-       
 class UserDetailOut(BaseModel):
     email: str
     dni: int
     firstName: str
     lastName: str
     type: str
+    orientacion_id: Optional[int] = None
+    anio_lectivo: Optional[int] = None
+    estado_academico: Optional[str] = None
 
     class Config:
         orm_mode = True
@@ -92,13 +98,18 @@ class UserDetailOut(BaseModel):
 class UserOut(BaseModel):
     id: int
     username: str
-    userdetail: UserDetailOut  # 👈 Anidado
+    userdetail: UserDetailOut
 
     class Config:
         orm_mode = True
 
+# Paginación filtrada para Admin
+class PaginatedFilteredBody(BaseModel):
+    limit: Optional[int] = 20
+    last_seen_id: Optional[int] = 0
+    search: Optional[str] = None
+
+class PaginatedUsersOut(BaseModel):
+    users: List[UserOut]
+    next_cursor: Optional[int] = None
 #endregion
-
-
-Session = sessionmaker(bind=engine)
-session = Session()

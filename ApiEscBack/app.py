@@ -1,23 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Routers existentes (los tuyos)
-from routes.user import user, userDetail
-from routes.materia import materia
+# Routers activos
+from routes.user import user
 from routes.pago import pago
-from routes.carrera import carrera
-
-
+from routes.orientacion import orientacion
+from routes.materia import materia
+from routes.alumnoMateria import alumno_materia
 
 from models import init_db
 
 # Crear instancia FastAPI
 api_escu = FastAPI()
 
-# Middleware CORS — debe ir ANTES de los routers
+# Middleware CORS
 api_escu.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Podés cambiarlo por ["http://localhost:5173"] si querés restringir
+    allow_origins=["*"],  # o ["http://localhost:5173"] si querés restringir
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -26,11 +25,9 @@ api_escu.add_middleware(
 # Inicializar la base de datos
 init_db()
 
-# Rutas existentes
+# Incluir routers
 api_escu.include_router(user)
-api_escu.include_router(userDetail)
-api_escu.include_router(materia)
 api_escu.include_router(pago)
-api_escu.include_router(carrera)
-
-
+api_escu.include_router(orientacion)
+api_escu.include_router(materia)
+api_escu.include_router(alumno_materia)

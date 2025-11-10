@@ -42,7 +42,7 @@ const Alumnos: React.FC = () => {
   const [formData, setFormData] = useState<CambiosUsuario>({});
 
   const fetchAlumnos = () => {
-    fetch(`http://${BACKEND_IP}:${BACKEND_PORT}/users/all`, {
+    fetch(`http://${BACKEND_IP}:${BACKEND_PORT}/user/paginated/filtered-sync`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => res.json())
