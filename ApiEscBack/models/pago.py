@@ -1,74 +1,30 @@
+# models/pago.py
 from config.db import Base
-from sqlalchemy import Column, Integer, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, Numeric, String, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
-from datetime import datetime
-from pydantic import BaseModel
-from typing import Optional, List
-from datetime import date
+import datetime
 
-
-# ──────────────────────────────────────────────────────────────
-# 📦 Modelo SQLAlchemy
-# ──────────────────────────────────────────────────────────────
 class Pago(Base):
     __tablename__ = "pagos"
 
-    id = Column(Integer, primary_key=True)
-    carrera_id = Column(ForeignKey("carreras.id"))
-    user_id = Column(ForeignKey("usuarios.id"))
-    monto = Column(Integer)
-    mes = Column(DateTime)
-    creado_en = Column(DateTime, default=datetime.now)
+    id = Column(Integer, primary_key=True, index=True)
+    alumno_id = Column(ForeignKey("usuarios.id"), nullable=False)
+    cuota_id = Column(ForeignKey("cuotas.id"), nullable=False)
+    fecha_pago = Column(DateTime, default=datetime.datetime.now)
+    monto_pagado = Column(Numeric(10, 2), nullable=False)
+    metodo = Column(String(30), nullable=False)  # efectivo, transferencia, mercado_pago
+    comprobante = Column(String(255), nullable=True)
+    registrado_por = Column(ForeignKey("usuarios.id"))
 
-    user = relationship("User", back_populates="pago", uselist=False)
-    carrera = relationship("Carrera", uselist=False)
+    # Relaciones
+    alumno = relationship("User", back_populates="pagos", foreign_keys=[alumno_id])
+    cuota = relationship("Cuota", back_populates="pagos")
+    admin = relationship("User", foreign_keys=[registrado_por])
 
-    def __init__(self, carrera_id, user_id, monto, mes):
-        self.carrera_id = carrera_id
-        self.user_id = user_id
-        self.monto = monto
-        self.mes = mes
-
-
-# ──────────────────────────────────────────────────────────────
-# 📌 Esquemas Pydantic
-# ──────────────────────────────────────────────────────────────
-
-class NuevoPago(BaseModel):
-    carrera_id: int
-    user_id: int
-    monto: int
-    mes: date
-
-
-class EditarPago(BaseModel):
-    carrera_id: Optional[int]
-    user_id: Optional[int]
-    monto: Optional[int]
-    mes: Optional[date]
-
-
-class PagoOut(BaseModel):
-    id: int
-    user_id: int
-    carrera_id: int
-    monto: int
-    mes: str  # ya formateado en la ruta como "%Y-%m"
-    carrera: Optional[dict]  # {id, nombre}
-
-    class Config:
-        orm_mode = True
-
-
-class PaginatedPagosBody(BaseModel):
-    limit: Optional[int] = 20
-    last_seen_id: Optional[int] = 0
-    user_id: Optional[int] = None
-    carrera_id: Optional[int] = None
-    fecha_desde: Optional[date] = None
-    fecha_hasta: Optional[date] = None
-
-
-class PaginatedPagosOut(BaseModel):
-    pagos: List[PagoOut]
-    next_cursor: Optional[int]
+    def __init__(self, alumno_id, cuota_id, monto_pagado, metodo, comprobante=None, registrado_por=None):
+        self.alumno_id = alumno_id
+        self.cuota_id = cuota_id
+        self.monto_pagado = monto_pagado
+        self.metodo = metodo
+        self.comprobante = comprobante
+        self.registrado_por = registrado_por

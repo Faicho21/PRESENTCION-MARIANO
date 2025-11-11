@@ -1,33 +1,40 @@
+# main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Routers activos
+
 from routes.user import user
-from routes.pago import pago
-from routes.orientacion import orientacion
-from routes.materia import materia
-from routes.alumnoMateria import alumno_materia
+from routes.tarifas import tarifas
+from routes.cuotas import cuotas
+from routes.pagos import pagos          
+from routes.notificaciones import notificaciones
 
-from models import init_db
 
-# Crear instancia FastAPI
-api_escu = FastAPI()
+from config.init_db import init_db
+
+
+api_escu = FastAPI(title="ApiEscuela", version="2.0")
 
 # Middleware CORS
 api_escu.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # o ["http://localhost:5173"] si querés restringir
+    allow_origins=["*"],  # podés restringir a ["http://localhost:5173"] si querés
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Inicializar la base de datos
+
 init_db()
 
-# Incluir routers
+
 api_escu.include_router(user)
-api_escu.include_router(pago)
-api_escu.include_router(orientacion)
-api_escu.include_router(materia)
-api_escu.include_router(alumno_materia)
+api_escu.include_router(tarifas)
+api_escu.include_router(cuotas)
+api_escu.include_router(pagos)
+api_escu.include_router(notificaciones)
+
+
+@api_escu.get("/")
+def root():
+    return {"message": "API Escuela funcionando correctamente 🚀"}

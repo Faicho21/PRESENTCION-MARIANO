@@ -2,13 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import joinedload, Session
 from config.db import get_db
-from models.user import (
-    User, UserDetail,
-    InputUser, InputLogin, UserDetailUpdate, UserOut, UserDetailOut,
-    PaginatedFilteredBody, PaginatedUsersOut
-)
+from auth.seguridad import obtener_usuario_desde_token, Seguridad, solo_admin
+from models.user import User
+from models.userDetail import UserDetail
 from models.pago import Pago
-from auth.seguridad import obtener_usuario_desde_token, Seguridad, solo_admin, admin_o_preceptor
+from schemas.user import (InputLogin,InputUser, UserOut, PaginatedUsersOut, PaginatedFilteredBody)
+from schemas.userDetail import (InputUserDetail, UserDetailUpdate, UserDetailOut)
 from typing import Dict, Any
 from typing import List, Optional
 
@@ -36,7 +35,7 @@ def get_own_profile(payload: dict = Depends(obtener_usuario_desde_token), db: Se
 @user.post("/user/paginated/filtered-sync", response_model=PaginatedUsersOut)
 def get_users_paginated_filtered_sync(
     body: PaginatedFilteredBody,
-    payload: dict = Depends(admin_o_preceptor),  # ✅ también puede acceder Preceptor
+    payload: dict = Depends(solo_admin),  # ✅ también puede acceder Preceptor
     db: Session = Depends(get_db)
 ):
     limit = body.limit or 20
@@ -137,7 +136,7 @@ def login_post(userIn: InputLogin, db: Session = Depends(get_db)):
 def actualizar_parcial_userdetail(
     user_id: int,
     cambios: UserDetailUpdate,
-    payload: dict = Depends(admin_o_preceptor),  # ✅ también lo puede hacer el preceptor
+    payload: dict = Depends(solo_admin),  # ✅ también lo puede hacer el preceptor
     db: Session = Depends(get_db)
 ):
     try:
@@ -171,7 +170,7 @@ def actualizar_parcial_userdetail(
 
 #Ver todos los alumnos
 @user.get("/user/alumnos")
-def obtener_alumnos(payload: dict = Depends(admin_o_preceptor), db: Session = Depends(get_db)):  # ✅ Preceptor puede ver
+def obtener_alumnos(payload: dict = Depends(solo_admin), db: Session = Depends(get_db)):  # ✅ Preceptor puede ver
     try:
         alumnos = (
             db.query(User)
@@ -228,7 +227,7 @@ def obtener_ultimo_usuario(
 
 #ruta para eliminar un usuario y sus datos asociados
 @user.delete("/users/{user_id}", response_model=dict)
-def eliminar_usuario(user_id: int, payload: dict = Depends(admin_o_preceptor), db: Session = Depends(get_db)):
+def eliminar_usuario(user_id: int, payload: dict = Depends(solo_admin), db: Session = Depends(get_db)):
     if payload["type"] != "Admin":
         raise HTTPException(status_code=403, detail="No tienes permiso para eliminar usuarios")
     try:

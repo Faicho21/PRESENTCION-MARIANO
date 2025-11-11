@@ -80,12 +80,6 @@ async def solo_admin(user=Depends(obtener_usuario_desde_token)):
         raise HTTPException(status_code=403, detail="Solo admin puede acceder")
     return user
 
-# 🧑‍🏫 Admin o preceptor
-async def admin_o_preceptor(user=Depends(obtener_usuario_desde_token)):
-    if user["type"].lower() not in ["admin", "preceptor"]:
-        raise HTTPException(status_code=403, detail="Permisos insuficientes")
-    return user
-
 # 🎓 Solo alumno
 async def solo_alumno(user=Depends(obtener_usuario_desde_token)):
     if user["type"].lower() != "alumno":
