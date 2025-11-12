@@ -10,6 +10,7 @@ from typing import List
 
 cuotas = APIRouter(prefix="/cuotas", tags=["Cuotas"])
 
+# Obtener la tarifa vigente
 def get_tarifa_vigente(db: Session):
     hoy = date.today()
     return (
@@ -20,6 +21,7 @@ def get_tarifa_vigente(db: Session):
         .first()
     )
 
+# Crear una nueva cuota
 @cuotas.post("/", response_model=CuotaOut)
 def generar_cuota(data: CuotaBase, db: Session = Depends(get_db)):
     tarifa = get_tarifa_vigente(db)
@@ -40,7 +42,7 @@ def generar_cuota(data: CuotaBase, db: Session = Depends(get_db)):
     db.refresh(nueva)
     return nueva
 
-
+# Listar todas las cuotas
 @cuotas.get("/", response_model=List[CuotaOut])
 def listar_cuotas(db: Session = Depends(get_db)):
     return db.query(Cuota).order_by(Cuota.id.desc()).all()

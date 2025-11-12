@@ -20,7 +20,7 @@ class Seguridad:
             payload = {
                 "sub": str(user.id),
                 "username": user.username,
-                "type": user.userdetail.type,
+                "type": getattr(user.userdetail, "type", None) or "Desconocido",
                 "exp": ahora + timedelta(days=1),
                 "iat": ahora,
             }

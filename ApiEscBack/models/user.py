@@ -6,15 +6,28 @@ class User(Base):
     __tablename__ = "usuarios"
 
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, nullable=False, unique=True)
-    password = Column(String, nullable=False)
+    username = Column(String(50), unique=True, nullable=False)
+    password = Column(String(100), nullable=False)
 
-    # Relaciones
+    # Relaciones principales
     userdetail = relationship("UserDetail", back_populates="user", uselist=False)
-    cuotas = relationship("Cuota", back_populates="alumno", cascade="all, delete-orphan")
-    pagos = relationship("Pago", back_populates="alumno", cascade="all, delete-orphan")
-    tarifas_creadas = relationship("Tarifa", back_populates="creador", cascade="all, delete-orphan")
+    cuotas = relationship("Cuota", back_populates="alumno")
 
-    def __init__(self, username, password):
-        self.username = username
-        self.password = password
+    # Relación con pagos
+    pagos_alumno = relationship(
+        "Pago",
+        foreign_keys="[Pago.alumno_id]",
+        back_populates="alumno"
+    )
+
+    pagos_registrados = relationship(
+        "Pago",
+        foreign_keys="[Pago.registrado_por]",
+        back_populates="registrado"
+    )
+
+    # Relación con tarifas
+    tarifas_creadas = relationship(
+        "Tarifa",
+        back_populates="creador"
+    )

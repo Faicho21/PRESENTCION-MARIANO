@@ -13,7 +13,7 @@ type LoginProcessResponse = {
 function Login() {
   const BACKEND_IP = "localhost";
   const BACKEND_PORT = "8000";
-  const ENDPOINT = "users/login";
+  const ENDPOINT = "user/loginUser";
   const LOGIN_URL = `http://${BACKEND_IP}:${BACKEND_PORT}/${ENDPOINT}`;
   
   const navigate = useNavigate();

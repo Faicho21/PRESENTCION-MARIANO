@@ -1,104 +1,89 @@
-import React, { useEffect, useState } from 'react';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
-import { motion } from 'framer-motion';
+import React, { useEffect, useState } from "react";
+import { motion } from "framer-motion";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import SkeletonLoader from "../components/ui/SkeletonLoader";
 
 interface Pago {
   id: number;
-  carrera_id: number;
-  monto: number;
-  mes: string;
-  carrera?: {
-    id: number;
-    nombre: string;
-  };
+  periodo: string;
+  monto_pagado: number;
+  metodo: string;
+  fecha_pago: string;
 }
 
 const MisPagos: React.FC = () => {
   const BACKEND_IP = "localhost";
   const BACKEND_PORT = "8000";
-  const token = localStorage.getItem('token');
+  const token = localStorage.getItem("token");
 
   const [pagos, setPagos] = useState<Pago[]>([]);
   const [mensaje, setMensaje] = useState<string | null>(null);
-  const [tipoUsuario, setTipoUsuario] = useState<string>("");
-  const [firstName, setFirstName] = useState<string>("");
-  const [lastName, setLastName] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(true);
   const [descargando, setDescargando] = useState<boolean>(false);
+  const [nombreAlumno, setNombreAlumno] = useState<string>("");
 
+  // Cargar datos del alumno y pagos
   useEffect(() => {
-    if (token) {
-      const payload = JSON.parse(atob(token.split('.')[1]));
-      setTipoUsuario(payload.type);
+    if (!token) return;
 
-      const userLocal = localStorage.getItem("user");
-      if (userLocal) {
-        const user = JSON.parse(userLocal);
-        setFirstName(user.userdetail?.firstName || "");
-        setLastName(user.userdetail?.lastName || "");
-      }
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    const userLocal = localStorage.getItem("user");
+
+    if (userLocal) {
+      const user = JSON.parse(userLocal);
+      const nombre = `${user.userdetail?.firstName || ""} ${user.userdetail?.lastName || ""}`;
+      setNombreAlumno(nombre);
     }
+
+    fetch(`http://${BACKEND_IP}:${BACKEND_PORT}/pago/mis_pagos`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("Error al obtener pagos");
+        return res.json();
+      })
+      .then((data) => setPagos(Array.isArray(data) ? data : []))
+      .catch(() => setMensaje("No se pudieron cargar tus pagos."))
+      .finally(() => setLoading(false));
   }, [token]);
 
-  useEffect(() => {
-    if (tipoUsuario === 'Alumno') {
-      fetch(`http://${BACKEND_IP}:${BACKEND_PORT}/pago/mis_pagos`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-        .then(res => res.json())
-        .then(data => setPagos(data))
-        .catch(() => setMensaje("No se pudieron cargar tus pagos."))
-        .finally(() => setLoading(false));
-    }
-  }, [tipoUsuario]);
-
+  // Exportar PDF
   const exportarPDF = () => {
     setDescargando(true);
-    const fechaActual = new Date().toLocaleDateString();
+    const fechaActual = new Date().toLocaleDateString("es-AR");
     const doc = new jsPDF();
-    doc.text(`Nombre: ${firstName}`, 14, 10);
-    doc.text(`Apellido: ${lastName}`, 14, 18);
-    doc.text(`Instituto Mariano Moreno`, 14, 26);
-    doc.text(`Fecha: ${fechaActual}`, 14, 34);
-    doc.text("Mis Pagos", 14, 42);
+
+    doc.setFontSize(12);
+    doc.text(`Alumno: ${nombreAlumno}`, 14, 12);
+    doc.text(`Fecha: ${fechaActual}`, 14, 20);
+    doc.text("Historial de Pagos", 14, 30);
+
     autoTable(doc, {
-      startY: 46,
-      head: [['ID', 'Carrera', 'Monto', 'Mes']],
-      body: pagos.map(p => [
+      startY: 36,
+      head: [["ID", "Periodo", "Monto Pagado", "Método", "Fecha"]],
+      body: pagos.map((p) => [
         p.id,
-        p.carrera?.nombre || `ID: ${p.carrera_id}`,
-        `$${p.monto}`,
-        p.mes
+        p.periodo || "-",
+        `$${p.monto_pagado}`,
+        p.metodo,
+        new Date(p.fecha_pago).toLocaleDateString("es-AR"),
       ]),
     });
-    doc.save(`pagos_${firstName}_${lastName}.pdf`);
+
+    doc.save(`mis_pagos_${nombreAlumno}.pdf`);
     setTimeout(() => setDescargando(false), 1000);
   };
 
-  if (tipoUsuario !== "Alumno") {
-    return (
-      <div className="container-fluid mt-4">
-        <motion.div 
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="alert alert-danger text-center"
-        >
-          No tienes permiso para ver esta sección.
-        </motion.div>
-      </div>
-    );
-  }
-
   return (
-    <div className="container-fluid mt-4">
+    <div className="container mt-4">
       <motion.div
-        className="p-4 mb-4 bg-light border rounded shadow-sm"
-        initial={{ opacity: 0, y: 30 }}
+        className="p-4 bg-light border rounded shadow-sm mb-4"
+        initial={{ opacity: 0, y: 25 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
       >
-        <h5 className="text-center">Mis Pagos</h5>
+        <h5 className="fw-semibold text-center text-success mb-0">Mis Pagos</h5>
       </motion.div>
 
       {mensaje && (
@@ -111,55 +96,63 @@ const MisPagos: React.FC = () => {
         </motion.div>
       )}
 
-      <div className="mb-3 text-end">
+      <div className="d-flex justify-content-end mb-3">
         <button
           className="btn border-success text-success"
           onClick={exportarPDF}
           disabled={descargando}
-          onMouseEnter={e => e.currentTarget.style.backgroundColor = '#f1f3f5'}
-          onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+          onMouseEnter={(e) =>
+            (e.currentTarget.style.backgroundColor = "#f1f3f5")
+          }
+          onMouseLeave={(e) =>
+            (e.currentTarget.style.backgroundColor = "transparent")
+          }
         >
           {descargando ? "Descargando..." : "Descargar PDF"}
         </button>
       </div>
 
+      {/* Mostrar skeleton mientras carga */}
       {loading ? (
-        <div className="text-center">
-          <div className="spinner-border text-success" role="status">
-            <span className="visually-hidden">Cargando...</span>
-          </div>
+        <SkeletonLoader rows={6} columns={5} type="table" />
+      ) : pagos.length === 0 ? (
+        <div className="text-center text-muted mt-3">
+          No tienes pagos registrados aún.
         </div>
       ) : (
-        <div className="p-4 bg-light border rounded shadow-sm">
-          <div className="table-responsive" style={{ maxHeight: "400px", overflowY: "auto" }}>
-            <table className="table table-sm table-bordered">
-              <thead className="table-light">
-                <tr>
-                  <th>ID</th>
-                  <th>Carrera</th>
-                  <th>Monto</th>
-                  <th>Mes</th>
+        <motion.div
+          className="table-responsive bg-light border rounded shadow-sm p-3"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.5 }}
+        >
+          <table className="table table-sm table-striped align-middle">
+            <thead className="table-success sticky-top">
+              <tr>
+                <th>ID</th>
+                <th>Periodo</th>
+                <th>Monto Pagado</th>
+                <th>Método</th>
+                <th>Fecha</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pagos.map((p) => (
+                <tr key={p.id}>
+                  <td>{p.id}</td>
+                  <td>{p.periodo || "-"}</td>
+                  <td>${p.monto_pagado}</td>
+                  <td>{p.metodo}</td>
+                  <td>
+                    {p.fecha_pago
+                      ? new Date(p.fecha_pago).toLocaleDateString("es-AR")
+                      : "-"}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {pagos.length > 0 ? (
-                  pagos.map(p => (
-                    <tr key={p.id}>
-                      <td>{p.id}</td>
-                      <td>{p.carrera?.nombre || `ID: ${p.carrera_id}`}</td>
-                      <td>${p.monto}</td>
-                      <td>{p.mes}</td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={4} className="text-center">No hay pagos registrados.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+              ))}
+            </tbody>
+          </table>
+        </motion.div>
       )}
     </div>
   );

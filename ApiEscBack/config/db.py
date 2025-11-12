@@ -1,9 +1,9 @@
-# db.py
+
 from sqlalchemy import create_engine, MetaData
 from sqlalchemy.orm import declarative_base, sessionmaker
 import os
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:1648@localhost:5432/escuela")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:1648@localhost:5432/api_escuela")
 
 metadata = MetaData()
 Base = declarative_base(metadata=metadata)

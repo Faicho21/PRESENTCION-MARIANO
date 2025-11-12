@@ -1,77 +1,175 @@
-# routes/pagos.py
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload
+from datetime import datetime
 from typing import List
+
 from config.db import get_db
+from auth.seguridad import obtener_usuario_desde_token, solo_admin
 from models.pago import Pago
 from models.cuota import Cuota
 from models.user import User
-from schemas.pago import PagoBase, PagoOut
-from auth.seguridad import obtener_usuario_desde_token, solo_admin
+from models.pagoEliminado import PagoEliminado
+from models.notificacionPago import NotificacionPago
+from schemas.pago import PagoBase, PagoOut, PagoEliminadoIn, PagoEliminadoOut
 from psycopg2 import IntegrityError
-from datetime import datetime
 
-pagos = APIRouter(tags=["Pagos"])
 
-# ──────────────────────────────────────────────────────────────
-# 📌 ADMIN: Crear nuevo pago
-# ──────────────────────────────────────────────────────────────
-@pagos.post("/nuevoPago")
-def nuevo_pago(data: PagoBase, db: Session = Depends(get_db), payload: dict = Depends(solo_admin)):
+pagos = APIRouter(prefix="/pagos", tags=["Pagos"])
+
+# 📌 ADMIN o ALUMNO: Registrar nuevo pago flexible (con notificación)
+@pagos.post("/nuevo", response_model=dict)
+def nuevo_pago(
+    data: PagoBase,
+    db: Session = Depends(get_db),
+    payload: dict = Depends(obtener_usuario_desde_token)
+):
     try:
-        cuota = db.query(Cuota).filter_by(id=data.cuota_id).first()
-        if not cuota:
-            return JSONResponse(status_code=404, content={"message": "Cuota no encontrada"})
+        # Solo Admin o Alumno
+        if payload["type"] not in ["Admin", "Alumno"]:
+            raise HTTPException(status_code=403, detail="No autorizado para registrar pagos")
 
+        alumno_id = data.alumno_id or int(payload["sub"])
+        monto_pagado = float(data.monto_pagado)
+
+        cuota = db.query(Cuota).filter_by(id=data.cuota_id, alumno_id=alumno_id).first()
+        if not cuota:
+            raise HTTPException(status_code=404, detail="Cuota no encontrada")
+
+        # Calcular saldo evitando negativos
+        cuota.monto_pagado += monto_pagado
+        cuota.saldo_pendiente = max(0, float(cuota.monto_a_pagar) - float(cuota.monto_pagado))
+
+        # Actualizar estado según saldo
+        if cuota.saldo_pendiente == 0:
+            cuota.estado = "pagada"
+        elif 0 < cuota.saldo_pendiente < float(cuota.monto_a_pagar):
+            cuota.estado = "parcial"
+        else:
+            cuota.estado = "pendiente"
+
+        # Crear registro del pago
         nuevo = Pago(
-            alumno_id=data.alumno_id,
-            cuota_id=data.cuota_id,
-            monto_pagado=data.monto_pagado,
+            alumno_id=alumno_id,
+            cuota_id=cuota.id,
+            monto_pagado=monto_pagado,
             metodo=data.metodo,
             comprobante=data.comprobante,
             registrado_por=payload["sub"]
         )
-
-        cuota.monto_pagado += data.monto_pagado
-        cuota.saldo_pendiente = cuota.monto_a_pagar - cuota.monto_pagado
-        cuota.estado = "pagada" if cuota.saldo_pendiente <= 0 else "parcial"
-
         db.add(nuevo)
         db.commit()
-        return JSONResponse(status_code=200, content={"message": "Pago registrado correctamente"})
+
+        # 🔔 Crear notificaciones automáticas
+        mensaje_alumno = (
+            f"Se registró un pago de ${monto_pagado:,.2f} "
+            f"para tu cuota del período {cuota.periodo}."
+        )
+        mensaje_admin = (
+            f"El alumno ID {alumno_id} realizó un pago de ${monto_pagado:,.2f} "
+            f"para la cuota {cuota.periodo}."
+        )
+
+        notif_alumno = NotificacionPago(
+            alumno_id=alumno_id,
+            cuota_id=cuota.id,
+            tipo="pago_registrado",
+            destinatario="alumno",
+            mensaje=mensaje_alumno
+        )
+        notif_admin = NotificacionPago(
+            alumno_id=alumno_id,
+            cuota_id=cuota.id,
+            tipo="pago_registrado",
+            destinatario="admin",
+            mensaje=mensaje_admin
+        )
+
+        db.add_all([notif_alumno, notif_admin])
+        db.commit()
+
+        return {"message": "Pago registrado y notificaciones enviadas correctamente"}
 
     except IntegrityError:
         db.rollback()
-        return JSONResponse(status_code=400, content={"message": "Error al registrar el pago"})
+        raise HTTPException(status_code=400, detail="Error de integridad al registrar pago")
+    except Exception as e:
+        db.rollback()
+        print("Error en nuevo pago:", e)
+        raise HTTPException(status_code=500, detail="Error interno del servidor")
 
 
-# ──────────────────────────────────────────────────────────────
-# 📌 ADMIN: Eliminar pago
-# ──────────────────────────────────────────────────────────────
-@pagos.delete("/eliminarPago/{pago_id}")
-def eliminar_pago(pago_id: int, db: Session = Depends(get_db), payload: dict = Depends(solo_admin)):
+# 📌 ADMIN: Eliminar pago y registrar en historial
+@pagos.delete("/eliminar/{pago_id}")
+def eliminar_pago(
+    pago_id: int,
+    data: PagoEliminadoIn = None,
+    db: Session = Depends(get_db),
+    payload: dict = Depends(solo_admin)
+):
     pago_obj = db.query(Pago).filter_by(id=pago_id).first()
     if not pago_obj:
-        return JSONResponse(status_code=404, content={"message": "Pago no encontrado"})
+        raise HTTPException(status_code=404, detail="Pago no encontrado")
 
-    # Restaurar saldo de la cuota si se elimina el pago
-    cuota = db.query(Cuota).filter_by(id=pago_obj.cuota_id).first()
-    if cuota:
-        cuota.monto_pagado -= pago_obj.monto_pagado
-        cuota.saldo_pendiente = cuota.monto_a_pagar - cuota.monto_pagado
-        cuota.estado = "pendiente" if cuota.monto_pagado == 0 else "parcial"
+    try:
+        motivo = data.motivo if data else None
 
-    db.delete(pago_obj)
-    db.commit()
-    return {"message": "Pago eliminado correctamente"}
+        # Registrar copia del pago eliminado
+        registro = PagoEliminado(pago=pago_obj, eliminado_por=payload["sub"], motivo=motivo)
+        db.add(registro)
+
+        # Ajustar saldo en la cuota
+        cuota = db.query(Cuota).filter_by(id=pago_obj.cuota_id).first()
+        if cuota:
+            cuota.monto_pagado -= pago_obj.monto_pagado
+            cuota.saldo_pendiente = max(0, float(cuota.monto_a_pagar) - float(cuota.monto_pagado))
+            cuota.estado = "pendiente" if cuota.monto_pagado <= 0 else "parcial"
+
+        # 🔔 Registrar notificación por eliminación
+        mensaje_admin = (
+            f"Se eliminó el pago ID {pago_obj.id} del alumno ID {pago_obj.alumno_id}. "
+            f"Monto: ${float(pago_obj.monto_pagado):,.2f}. Motivo: {motivo or 'No especificado'}."
+        )
+        notif = NotificacionPago(
+            alumno_id=pago_obj.alumno_id,
+            cuota_id=pago_obj.cuota_id,
+            tipo="pago_eliminado",
+            destinatario="admin",
+            mensaje=mensaje_admin
+        )
+        db.add(notif)
+
+        # Eliminar el pago original
+        db.delete(pago_obj)
+        db.commit()
+        return {"message": "Pago eliminado, registrado y notificado"}
+
+    except Exception as e:
+        db.rollback()
+        print("Error al eliminar pago:", e)
+        raise HTTPException(status_code=500, detail="Error interno del servidor")
 
 
-# ──────────────────────────────────────────────────────────────
-# 📌 ADMIN: Ver último pago
-# ──────────────────────────────────────────────────────────────
-@pagos.get("/pago/ultimo")
-def obtener_ultimo_pago(db: Session = Depends(get_db), payload: dict = Depends(solo_admin)):
+# 📜 ADMIN: Ver historial de pagos eliminados
+@pagos.get("/eliminados", response_model=List[PagoEliminadoOut])
+def listar_pagos_eliminados(
+    db: Session = Depends(get_db),
+    payload: dict = Depends(solo_admin)
+):
+    registros = (
+        db.query(PagoEliminado)
+        .order_by(PagoEliminado.fecha_eliminacion.desc())
+        .all()
+    )
+    return registros
+
+
+# 📊 ADMIN: Ver último pago registrado
+@pagos.get("/ultimo", response_model=dict)
+def obtener_ultimo_pago(
+    db: Session = Depends(get_db),
+    payload: dict = Depends(solo_admin)
+):
     ultimo = (
         db.query(Pago)
         .options(joinedload(Pago.alumno).joinedload(User.userdetail))
@@ -80,84 +178,29 @@ def obtener_ultimo_pago(db: Session = Depends(get_db), payload: dict = Depends(s
     )
 
     if not ultimo:
-        return JSONResponse(status_code=404, content={"message": "No hay pagos registrados"})
-
-    alumno = (
-        f"{ultimo.alumno.userdetail.firstName} {ultimo.alumno.userdetail.lastName}"
-        if ultimo.alumno and ultimo.alumno.userdetail else "Alumno desconocido"
-    )
+        raise HTTPException(status_code=404, detail="No hay pagos registrados")
 
     return {
-        "alumno": alumno,
+        "alumno": f"{ultimo.alumno.userdetail.firstName} {ultimo.alumno.userdetail.lastName}",
         "monto_pagado": float(ultimo.monto_pagado),
         "fecha_pago": ultimo.fecha_pago.strftime("%Y-%m-%d %H:%M"),
         "metodo": ultimo.metodo,
     }
 
 
-# ──────────────────────────────────────────────────────────────
-# 📌 ADMIN: Ver pagos con filtros y cursor
-# ──────────────────────────────────────────────────────────────
-@pagos.post("/pago/paginated/filtered-sync")
-def get_pagos_paginated_filtered_sync(
-    body: dict,
-    db: Session = Depends(get_db),
-    payload: dict = Depends(solo_admin),
-):
-    limit = body.get("limit", 20)
-    last_seen_id = body.get("last_seen_id", 0)
-    alumno_id = body.get("alumno_id")
-    fecha_desde = body.get("fecha_desde")
-    fecha_hasta = body.get("fecha_hasta")
-
-    try:
-        q = (
-            db.query(Pago)
-            .options(joinedload(Pago.alumno).joinedload("userdetail"))
-        )
-
-        if alumno_id:
-            q = q.filter(Pago.alumno_id == alumno_id)
-        if fecha_desde:
-            q = q.filter(Pago.fecha_pago >= fecha_desde)
-        if fecha_hasta:
-            q = q.filter(Pago.fecha_pago <= fecha_hasta)
-        if last_seen_id > 0:
-            q = q.filter(Pago.id > last_seen_id)
-
-        pagos_db = q.order_by(Pago.id.asc()).limit(limit).all()
-        next_cursor = pagos_db[-1].id if pagos_db else None
-
-        pagos_out = [
-            {
-                "id": p.id,
-                "alumno": f"{p.alumno.userdetail.firstName} {p.alumno.userdetail.lastName}" if p.alumno and p.alumno.userdetail else "Desconocido",
-                "monto_pagado": float(p.monto_pagado),
-                "fecha_pago": p.fecha_pago.strftime("%Y-%m-%d"),
-                "metodo": p.metodo,
-            }
-            for p in pagos_db
-        ]
-
-        return {"pagos": pagos_out, "next_cursor": next_cursor}
-
-    except Exception as e:
-        print("Error en paginación de pagos:", e)
-        raise HTTPException(status_code=500, detail="Error al obtener pagos")
-
-
-# ──────────────────────────────────────────────────────────────
 # 👤 ALUMNO: Ver sus propios pagos
-# ──────────────────────────────────────────────────────────────
-@pagos.get("/pago/mis_pagos", response_model=List[PagoOut])
-def ver_mis_pagos(db: Session = Depends(get_db), payload: dict = Depends(obtener_usuario_desde_token)):
+@pagos.get("/mis", response_model=List[PagoOut])
+def ver_mis_pagos(
+    db: Session = Depends(get_db),
+    payload: dict = Depends(obtener_usuario_desde_token)
+):
     if payload["type"] != "Alumno":
         raise HTTPException(status_code=403, detail="Solo los alumnos pueden ver sus pagos")
 
     pagos_alumno = (
         db.query(Pago)
         .options(joinedload(Pago.cuota))
-        .filter(Pago.alumno_id == payload["sub"])
+        .filter(Pago.alumno_id == int(payload["sub"]))
         .order_by(Pago.fecha_pago.desc())
         .all()
     )
@@ -174,26 +217,21 @@ def ver_mis_pagos(db: Session = Depends(get_db), payload: dict = Depends(obtener
     ]
 
 
-# ──────────────────────────────────────────────────────────────
-# 📌 ADMIN: Editar pago parcialmente
-# ──────────────────────────────────────────────────────────────
-@pagos.patch("/editarPago/{pago_id}")
+# ⚙️ ADMIN: Editar pago parcialmente
+@pagos.patch("/editar/{pago_id}", response_model=dict)
 def editar_pago_parcial(
     pago_id: int,
-    datos_actualizados: dict,
+    datos: dict,
     db: Session = Depends(get_db),
     payload: dict = Depends(solo_admin)
 ):
     pago_existente = db.query(Pago).filter_by(id=pago_id).first()
     if not pago_existente:
-        return JSONResponse(status_code=404, content={"message": "Pago no encontrado"})
+        raise HTTPException(status_code=404, detail="Pago no encontrado")
 
-    if "monto_pagado" in datos_actualizados:
-        pago_existente.monto_pagado = datos_actualizados["monto_pagado"]
-    if "metodo" in datos_actualizados:
-        pago_existente.metodo = datos_actualizados["metodo"]
-    if "comprobante" in datos_actualizados:
-        pago_existente.comprobante = datos_actualizados["comprobante"]
+    for campo, valor in datos.items():
+        if hasattr(pago_existente, campo):
+            setattr(pago_existente, campo, valor)
 
     db.commit()
-    return {"message": "Pago modificado parcialmente"}
+    return {"message": "Pago actualizado correctamente"}
