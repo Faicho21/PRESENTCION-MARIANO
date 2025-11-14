@@ -34,7 +34,7 @@ def obtener_detalle_por_id(
     return detalle
 
 # Actualizar un detalle de usuario
-@user_detail.patch("/{user_id}", response_model=dict)
+@user_detail.patch("/editar/{user_id}", response_model=dict)
 def actualizar_detalle(
     user_id: int,
     cambios: UserDetailUpdate,
@@ -82,7 +82,7 @@ def crear_detalle(
     return nuevo_detalle
 
 # Eliminar un detalle (solo Admin)
-@user_detail.delete("/{user_id}", status_code=204)
+@user_detail.delete("/eliminar/{user_id}", status_code=204)
 def eliminar_detalle(
     user_id: int,
     payload: dict = Depends(solo_admin),

@@ -1,90 +1,157 @@
-import React, { useState } from "react";
-import { ToastContainer, toast } from "react-toastify";
-import "react-toastify/dist/ReactToastify.css";
+// src/views/GestionUsuarios.tsx
+import { useEffect, useRef, useState } from "react";
+import { motion } from "framer-motion";
+import { Plus, Search } from "lucide-react";
+import { toast } from "react-toastify";
+
 import AlumnosTable from "../components/alumnos/AlumnosTable";
-import AlumnoForm from "../components/alumnos/AlumnosForm";
+import AlumnosForm from "../components/alumnos/AlumnosForm";
+import type { User } from "../hooks/user.hook";
+import { useFetchUsers, useSearch } from "../hooks/user.hook";
 
-const GestionUsuarios: React.FC = () => {
-  const [modoFormulario, setModoFormulario] = useState(false);
-  const [alumnoSeleccionado, setAlumnoSeleccionado] = useState<any>(null);
-  const [reload, setReload] = useState(false);
+const GestionUsuarios = () => {
+  const BACKEND_IP = "localhost";
+  const BACKEND_PORT = "8000";
+  const ENDPOINT = "user/paginated/filtered-sync";
+  const URL = `http://${BACKEND_IP}:${BACKEND_PORT}/${ENDPOINT}`;
 
-  const handleEditar = (alumno: any) => {
-    setAlumnoSeleccionado(alumno);
-    setModoFormulario(true);
-  };
+  const [previousCursors, setPreviousCursors] = useState<number[]>([]);
+  const [pageSize, setPageSize] = useState(20);
 
-  const handleEliminar = async (id: number) => {
-    if (!window.confirm("¿Seguro que deseas eliminar este alumno?")) return;
+  const [showForm, setShowForm] = useState(false);
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
 
-    try {
-      const token = localStorage.getItem("token");
-      const res = await fetch(`http://localhost:8000/users/${id}`, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+  // Search con debounce (usa la lógica del profe)
+  const { search, setSearch } = useSearch(() => fetchUsers(0));
 
-      if (!res.ok) throw new Error("Error al eliminar alumno");
+  const { isLoading, data, nextCursor, fetchUsers } = useFetchUsers({
+    url: URL,
+    search,
+    pageSize,
+    setPreviousCursors,
+  });
 
-      toast.success("Alumno eliminado correctamente");
-      setReload(!reload);
-    } catch (err) {
-      console.error(err);
-      toast.error("No se pudo eliminar el alumno");
+  // Cargar la primera página y recargar cuando cambia pageSize
+  useEffect(() => {
+    fetchUsers(0);
+  }, [pageSize]);
+
+  // --------- Handlers de paginación ---------
+  const handleNext = () => {
+    if (nextCursor !== null) {
+      fetchUsers(nextCursor);
     }
   };
 
-  const handleAgregarNuevo = () => {
-    setAlumnoSeleccionado(null);
-    setModoFormulario(true);
+  const handlePrev = () => {
+    if (previousCursors.length > 0) {
+      const prevCur = previousCursors[previousCursors.length - 1];
+      const newPrev = previousCursors.slice(0, -1);
+      setPreviousCursors(newPrev);
+      fetchUsers(prevCur, true);
+    } else {
+      fetchUsers(0, true);
+    }
   };
 
-  const handleCancelar = () => {
-    setModoFormulario(false);
-    setAlumnoSeleccionado(null);
+  // --------- Handlers del formulario ---------
+  const handleAddUser = () => {
+    setSelectedUser(null);
+    setShowForm(true);
   };
 
-  const handleExito = () => {
-    setModoFormulario(false);
-    setAlumnoSeleccionado(null);
-    setReload(!reload);
+  const handleEdit = (user: User) => {
+    setSelectedUser(user);
+    setShowForm(true);
+  };
+
+  const handleChangePageSize = (newSize: number) => {
+    setPageSize(newSize);
+    setPreviousCursors([]);
+    fetchUsers(0, true);
   };
 
   return (
-    <div className="container mt-4">
-      <ToastContainer position="bottom-right" autoClose={2500} />
+    <motion.div
+      className="container py-4"
+      initial={{ opacity: 0, y: 15 }}
+      animate={{ opacity: 1, y: 0 }}
+    >
+      {/* HEADER */}
+      <div className="d-flex justify-content-between align-items-center mb-4">
+        <h2 className="fw-bold" style={{ color: "#3ab397" }}>
+          Gestión de Alumnos
+        </h2>
 
-      <div className="d-flex justify-content-between align-items-center mb-3">
-        <h4 className="fw-bold text-success mb-0">Gestión de Usuarios</h4>
+        <button
+          className="btn btn-success d-flex align-items-center"
+          style={{ backgroundColor: "#3ab397", borderColor: "#3ab397" }}
+          onClick={handleAddUser}
+        >
+          <Plus className="me-2" size={18} />
+          Agregar Alumno
+        </button>
+      </div>
 
-        {!modoFormulario && (
+      {/* BUSCADOR */}
+      <div className="input-group mb-4 shadow-sm">
+        <span className="input-group-text bg-white">
+          <Search size={18} className="text-muted" />
+        </span>
+        <input
+          type="text"
+          className="form-control"
+          placeholder="Buscar por nombre, apellido, email o usuario..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      </div>
+
+      {/* TABLA */}
+      <div className="card border-0 shadow-sm p-3">
+        <AlumnosTable users={data} loading={isLoading} onEdit={handleEdit} />
+      </div>
+
+      {/* Controles de paginación */}
+      <div className="d-flex justify-content-between align-items-center mt-3">
+        <div className="btn-group">
           <button
-            className="btn btn-outline-success"
-            onClick={handleAgregarNuevo}
+            className="btn btn-outline-secondary"
+            onClick={handlePrev}
+            disabled={isLoading}
           >
-            + Agregar Alumno
+            Anterior
           </button>
-        )}
+          <button
+            className="btn btn-outline-secondary"
+            onClick={handleNext}
+            disabled={isLoading || nextCursor === null}
+          >
+            Siguiente
+          </button>
+        </div>
       </div>
 
-      <div className="card p-3 shadow-sm border-0">
-        {modoFormulario ? (
-          <AlumnoForm
-            alumnoSeleccionado={alumnoSeleccionado}
-            onSuccess={handleExito}
-            onCancel={handleCancelar}
-          />
-        ) : (
-          <AlumnosTable
-            key={reload ? "reload" : "default"}
-            onEdit={handleEditar}
-            onDelete={handleEliminar}
-          />
-        )}
-      </div>
-    </div>
+      {/* FORM PARA CREAR / EDITAR */}
+      {showForm && (
+        <AlumnosForm
+          show={showForm}
+          selectedUser={selectedUser}
+          onClose={(successMessage: string | null = null) => {
+            setShowForm(false);
+
+            // 🔥 Refrescar tabla completa después de crear o editar
+            setPreviousCursors([]);
+            fetchUsers(0, true);
+
+            // ✨ Mostrar toast si el form envió un mensaje
+            if (successMessage) {
+              toast.success(successMessage, { autoClose: 2000 });
+            }
+          }}
+        />
+      )}
+    </motion.div>
   );
 };
 

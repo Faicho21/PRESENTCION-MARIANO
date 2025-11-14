@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+
 from typing import Optional
 from schemas.userDetail import UserDetailOut
 from typing import List
@@ -6,6 +7,12 @@ from typing import List
 class InputUser(BaseModel):
     username: str
     password: str
+    email: str
+    dni: int
+    firstName: str
+    lastName: str
+    type: str
+    
 
 class InputLogin(BaseModel):
     username: str
